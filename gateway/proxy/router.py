@@ -74,8 +74,42 @@ async def forward_request(
     )
 
     # rate limit estimated tokens
-    from gateway.middleware.rate_limit import rate_limit_check, get_limiter
+    from gateway.middleware.rate_limit import rate_limit_check
     await rate_limit_check(request, estimated_tokens=prompt_tokens)
+
+    # Quota enforcement (daily/monthly token caps)
+    from gateway.config.settings import settings as _s
+    if _s.quota_enforcement_enabled:
+        try:
+            from gateway.db.session import get_session_factory
+            from gateway.db.models import UsageRecord, Quota
+            from sqlalchemy import select, func
+            sf = get_session_factory()
+            ak = getattr(request.state, "api_key", None)
+            q = getattr(request.state, "quota", None)
+            if ak and q and sf is not None:
+                async with sf() as session:
+                    from datetime import datetime, timezone, timedelta
+                    now = datetime.now(timezone.utc)
+                    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                    r1 = await session.execute(
+                        select(func.coalesce(func.sum(UsageRecord.total_tokens), 0))
+                        .where(UsageRecord.tenant_id == ak.tenant_id, UsageRecord.created_at >= day_start))
+                    daily = int(r1.scalar() or 0)
+                    r2 = await session.execute(
+                        select(func.coalesce(func.sum(UsageRecord.total_tokens), 0))
+                        .where(UsageRecord.tenant_id == ak.tenant_id, UsageRecord.created_at >= month_start))
+                    monthly = int(r2.scalar() or 0)
+                    if q.daily_token_cap and daily + prompt_tokens > q.daily_token_cap:
+                        from fastapi.responses import JSONResponse
+                        return JSONResponse(status_code=429, content={"error": "Daily token quota exceeded"})
+                    if q.monthly_token_cap and monthly + prompt_tokens > q.monthly_token_cap:
+                        from fastapi.responses import JSONResponse
+                        return JSONResponse(status_code=429, content={"error": "Monthly token quota exceeded"})
+        except Exception as e:
+            from gateway.config.logging import log
+            log.warning("quota_check_failed", error=str(e))
 
     url = build_upstream_url(provider, path)
     headers = {}

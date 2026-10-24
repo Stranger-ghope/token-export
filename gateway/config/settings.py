@@ -1,12 +1,14 @@
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, ConfigDict
 from typing import Optional
 
-
 class Settings(BaseSettings):
+    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8",
+                             case_sensitive=False, extra="ignore")
+
     app_name: str = "token-gateway"
     app_env: str = "dev"
-    debug: bool = True
+    debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8080
     log_level: str = "INFO"
@@ -14,6 +16,19 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/gateway.db"
     redis_url: str = "redis://localhost:6379/0"
     redis_fallback_inmemory: bool = True
+
+    # Admin API key (required in prod; dev default in .env.example). When unset,
+    # admin endpoints fail closed (503).
+    admin_api_key: Optional[str] = None
+
+    # CORS
+    cors_origins: str = "*"  # comma-separated list, or "*"
+
+    # Trusted proxies (comma-separated IPs) whose X-Forwarded-For is honored
+    trusted_proxies: str = ""
+
+    # Max request body size in bytes (0 = unlimited)
+    max_request_body_bytes: int = 1_048_576  # 1 MiB
 
     jwt_secret: str = Field(default="change-me-in-prod-please-32bytes-min", min_length=16)
     jwt_algorithm: str = "HS256"
@@ -35,11 +50,7 @@ class Settings(BaseSettings):
     default_rpm: int = 60
     default_tpm: int = 100000
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        extra = "ignore"
-
+    # Quota enforcement
+    quota_enforcement_enabled: bool = True
 
 settings = Settings()

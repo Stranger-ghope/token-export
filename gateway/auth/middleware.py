@@ -24,8 +24,19 @@ async def get_current_api_key(
     ak = await resolve_api_key(session, raw)
     if not ak:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or inactive API key")
+    # tenant active check
+    from gateway.db.models import Tenant
+    t = await session.get(Tenant, ak.tenant_id)
+    if t is None or not t.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant inactive")
     # IP whitelist check
     client_ip = request.client.host if request.client else None
+    from gateway.config.settings import settings
+    trusted = [x.strip() for x in settings.trusted_proxies.split(",") if x.strip()]
+    if client_ip in trusted:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            client_ip = xff.split(",")[0].strip()
     if ak.ip_whitelist and client_ip and client_ip not in ak.ip_whitelist:
         log.warning("ip_not_whitelisted", ip=client_ip, key=ak.key_prefix)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="IP not whitelisted")

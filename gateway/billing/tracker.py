@@ -54,18 +54,31 @@ async def emit_billing_event(session: AsyncSession, tenant_id: str, event_type: 
     )
     session.add(ev)
     await session.commit()
-    # Fire webhook if configured (best-effort, non-blocking)
+    # Fire webhook if configured (best-effort, non-blocking, fire-and-forget)
     if settings.billing_webhook_url:
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(settings.billing_webhook_url, json={
-                    "tenant_id": tenant_id,
-                    "event_type": event_type,
-                    "payload": payload,
-                })
-            ev.delivered = True
-            await session.commit()
-        except Exception as e:
-            log.warning("billing_webhook_failed", error=str(e))
+        import asyncio
+        ev_id = ev.id
+        async def _fire():
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(settings.billing_webhook_url, json={
+                        "tenant_id": tenant_id,
+                        "event_type": event_type,
+                        "payload": payload,
+                    })
+                try:
+                    from gateway.db.session import get_session_factory
+                    sf = get_session_factory()
+                    if sf is not None:
+                        async with sf() as s2:
+                            from gateway.db.models import BillingEvent
+                            from sqlalchemy import update
+                            await s2.execute(update(BillingEvent).where(BillingEvent.id == ev_id).values(delivered=True))
+                            await s2.commit()
+                except Exception:
+                    pass
+            except Exception as e:
+                log.warning("billing_webhook_failed", error=str(e))
+        asyncio.create_task(_fire())
     return ev
