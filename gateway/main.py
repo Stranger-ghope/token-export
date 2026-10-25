@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+import os
 from gateway.config.settings import settings
 from gateway.config.logging import configure_logging, log
 from gateway.db.session import init_db
@@ -113,3 +114,13 @@ async def metrics():
 async def unhandled(request: Request, exc: Exception):
     log.error("unhandled_exception", error=str(exc), path=str(request.url))
     return JSONResponse(status_code=500, content={"error": "internal server error"})
+
+
+# Serve the built admin console (frontend/dist) when it exists, so the gateway
+# exposes the UI and the API on a single origin. Registered last so every API
+# route registered above wins over this static catch-all.
+_DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+if os.path.isdir(_DIST):
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="console")

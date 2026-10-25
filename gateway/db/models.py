@@ -76,3 +76,12 @@ class BillingEvent(Base):
     payload = Column(JSON, default=dict)
     delivered = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=now_utc)
+
+
+class QuotaAudit(Base):
+    """Who changed which quota, with before/after values."""
+    __tablename__ = "quota_audit"
+    id = Column(String(64), primary_key=True)
+    tenant_id = Column(String(64), ForeignKey("tenants.id"), nullable=False, index=True)
+    changes = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=now_utc, index=True)

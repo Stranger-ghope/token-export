@@ -109,20 +109,28 @@ async def _build_limiter():
         log.info("rate_limiter", backend="fakeredis")
         _limiter = RedisRateLimiter(aioredis.FakeRedis())
         return _limiter
-    if settings.redis_fallback_inmemory:
-        log.info("rate_limiter", backend="inmemory")
-        _limiter = InMemoryRateLimiter()
-        return _limiter
+
+    # Redis is the primary backend so limits are shared across workers and
+    # instances. REDIS_FALLBACK_INMEMORY only decides what happens when Redis
+    # is unreachable: fall back to the per-process limiter (dev), or fail
+    # closed instead of silently allowing unlimited traffic (prod).
     try:
         import redis.asyncio as redis_async
         client = redis_async.from_url(settings.redis_url, socket_connect_timeout=2, socket_timeout=2)
         await client.ping()
         log.info("rate_limiter", backend="redis", url=settings.redis_url)
         _limiter = RedisRateLimiter(client)
+        return _limiter
     except Exception as e:
-        log.warning("redis_unavailable_fallback_inmemory", error=str(e))
-        _limiter = InMemoryRateLimiter()
-    return _limiter
+        if settings.redis_fallback_inmemory:
+            log.warning("redis_unavailable_fallback_inmemory", error=str(e))
+            _limiter = InMemoryRateLimiter()
+            return _limiter
+        # No fallback allowed: leave _limiter unset so the next request retries
+        # (Redis may just be starting), and let the caller fail closed.
+        log.error("redis_unavailable_no_fallback", error=str(e))
+        _limiter = None
+        raise RuntimeError(f"Redis unavailable ({e}) and REDIS_FALLBACK_INMEMORY=false") from e
 
 
 async def get_limiter():
@@ -141,7 +149,14 @@ async def rate_limit_check(request: Request, estimated_tokens: int = 0) -> None:
     tpm_limit = quota.tpm_limit if quota else settings.default_tpm
 
     tenant_key = f"tenant:{ak.tenant_id}"
-    limiter = await get_limiter()
+    try:
+        limiter = await get_limiter()
+    except Exception as e:
+        log.error("rate_limiter_unavailable", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Rate limiter backend unavailable (Redis unreachable and REDIS_FALLBACK_INMEMORY=false)",
+        )
     if not await limiter.check_rpm(tenant_key, rpm_limit):
         log.warning("rate_limit_rpm_exceeded", tenant=ak.tenant_id)
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,

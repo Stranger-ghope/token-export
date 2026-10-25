@@ -18,6 +18,25 @@ pip install -r requirements.txt
 uvicorn gateway.main:app --host 0.0.0.0 --port 8080
 ```
 
+## Admin console (UI)
+A React + Vite console with light/dark theme lives in `frontend/` — overview,
+tenants & API keys, usage, and a streaming playground. FastAPI serves the built
+app on the same origin as the API.
+
+```bash
+cd frontend && npm install && npm run build   # build once
+uvicorn gateway.main:app --host 0.0.0.0 --port 8080
+# open http://localhost:8080
+```
+
+First run: click **Set admin key** (top bar) and enter `ADMIN_API_KEY` from `.env`.
+
+Hot-reload development (Vite proxies `/v1`, `/admin`, `/health` to `:8080`):
+
+```bash
+cd frontend && npm run dev    # http://localhost:5173
+```
+
 ## Endpoints
 - `POST /v1/chat/completions` (OpenAI-compatible, supports stream=true)
 - `POST /v1/completions`, `/v1/embeddings`, `/v1/messages` (Anthropic-style)
@@ -29,6 +48,13 @@ uvicorn gateway.main:app --host 0.0.0.0 --port 8080
 
 ## Auth
 Pass API key via `Authorization: Bearer <key>` or `X-API-Key` header.
+
+Provider credentials live **server-side**: set `UPSTREAM_API_KEY_DEEPSEEK`,
+`UPSTREAM_API_KEY_QWEN`, `UPSTREAM_API_KEY_OPENAI`, `UPSTREAM_API_KEY_ANTHROPIC`,
+`UPSTREAM_API_KEY_BAICHUAN` in `.env`. The gateway injects them on the outbound
+request (Bearer for OpenAI-compatible providers, `x-api-key` for Anthropic), so
+tenant keys never leave the gateway. Without a key the proxy answers `503` with
+the exact env var to set.
 
 ## Features
 - Dynamic provider routing by model name + optional `provider` override

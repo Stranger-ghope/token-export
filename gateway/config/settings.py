@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     upstream_anthropic: str = "https://api.anthropic.com/v1"
     upstream_baichuan: str = "https://api.baichuan-ai.com/v1"
 
+    # Server-side provider credentials. When set, the gateway injects them on
+    # the outbound request so tenant keys never leave the gateway. When unset,
+    # the proxy fails closed with an actionable 503 instead of forwarding the
+    # tenant key upstream.
+    upstream_api_key_deepseek: Optional[str] = None
+    upstream_api_key_qwen: Optional[str] = None
+    upstream_api_key_openai: Optional[str] = None
+    upstream_api_key_anthropic: Optional[str] = None
+    upstream_api_key_baichuan: Optional[str] = None
+
     pii_masking_enabled: bool = True
     pii_mask_char: str = "*"
 
@@ -52,5 +62,10 @@ class Settings(BaseSettings):
 
     # Quota enforcement
     quota_enforcement_enabled: bool = True
+
+    # Cap alert: fire a `cap_alert` billing event (DB + BILLING_WEBHOOK_URL)
+    # once per tenant per day when today's tokens reach this share of the
+    # daily cap. 0 disables the alert.
+    cap_alert_threshold: float = 0.8
 
 settings = Settings()

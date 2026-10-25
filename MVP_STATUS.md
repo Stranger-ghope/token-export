@@ -1,6 +1,6 @@
 # MVP Status & Known Limitations
 
-Last updated: 2026-10-22 · branch `master` · commit `35a7e28` + security hardening
+Last updated: 2026-10-25 · branch `master` · console + upstream credentials + Redis rate limiting
 
 ## What this MVP delivers (demo-ready)
 
@@ -12,6 +12,16 @@ Last updated: 2026-10-22 · branch `master` · commit `35a7e28` + security harde
 - PII masking on outbound + inbound payloads and SSE deltas (regex-based)
 - BPE token counting (tiktoken) + `/tools/*` utilities
 - Prometheus `/metrics`, structlog JSON logs, `/health`
+- Admin console (React + Vite, light/dark) served by FastAPI at `/`: overview,
+  tenants & API keys, quota limits, usage, streaming playground
+- Server-side upstream credentials (`UPSTREAM_API_KEY_*`) — tenant keys are never
+  forwarded to providers; unconfigured providers fail closed with an actionable 503
+- Quota management: list caps + usage-vs-cap, `PUT /admin/quotas/{tenant_id}` to edit,
+  and a `quota_audit` table (before/after) surfaced in the console
+- Daily-cap alert: `cap_alert` billing event (+ `BILLING_WEBHOOK_URL` webhook) fired once
+  per tenant per day at `CAP_ALERT_THRESHOLD` of the daily cap
+- CI: pytest + console build + Docker image build on every push; image pushed to
+  `ghcr.io/<owner>/<repo>/gateway` on `v*` tags
 
 ## Security (hardened in this pass)
 
@@ -22,8 +32,11 @@ Last updated: 2026-10-22 · branch `master` · commit `35a7e28` + security harde
 
 ## Known limitations (NOT production-ready)
 
-1. Rate limiter is **in-memory per process**. Redis is configured but not wired; do not run
-   multiple workers/instances expecting shared limits. Either wire Redis or run a single worker.
+1. ~~Rate limiter is in-memory per process.~~ **RESOLVED:** Redis is the primary backend
+   (counters shared across workers/instances). `REDIS_FALLBACK_INMEMORY=true` falls back to the
+   per-process limiter only when Redis is unreachable; `false` fails closed with a 503 instead of
+   silently allowing unlimited traffic. Live Redis is not exercised in the test suite (the shared
+   logic is covered with fakeredis).
 2. No retry / backoff / circuit breaker on upstream calls (single attempt, then 504/502).
 3. No pricing model — `BillingEvent` records usage only; no per-token cost or invoices.
 4. "BPE compression ratio" is a heuristic (bpe_tokens vs chars/4), not actual payload compression.
@@ -33,7 +46,10 @@ Last updated: 2026-10-22 · branch `master` · commit `35a7e28` + security harde
    Use a single DB volume and back it up.
 8. No request body size limits / input validation beyond FastAPI defaults.
 9. Admin auth is a single shared key, not per-user JWT. Rotate via env; not for multi-admin use.
-10. Tests: 4 smoke tests only. No proxy-path, streaming, or auth tests.
+10. Tests: 23 (proxy path, streaming, auth, admin/quota/audit endpoints, cap alerts,
+    upstream credential injection, rate-limit backends). The Docker image builds in CI but
+    no test calls a real upstream provider, and webhook delivery is only exercised when
+    `BILLING_WEBHOOK_URL` points at a live receiver.
 
 ## Deployment
 
@@ -43,8 +59,9 @@ Last updated: 2026-10-22 · branch `master` · commit `35a7e28` + security harde
 
 ## Recommended next steps before client delivery
 
-1. Wire Redis sliding-window rate limiter (or remove the Redis claim from README).
+1. ~~Wire Redis sliding-window rate limiter~~ — done (see limitation 1).
 2. Add quota enforcement + Alembic migrations + backup story.
-3. Add proxy/streaming/auth tests and a CI pipeline.
+3. ~~Add proxy/streaming/auth tests and a CI pipeline~~ — done (18 tests, GitHub Actions).
 4. Decide product scope with client: gateway is one component; the compute revenue-share /
    vertical SaaS business logic described in the research docs is not implemented here.
+5. Build the Docker image in CI, and exercise one real upstream provider call in a staging run.

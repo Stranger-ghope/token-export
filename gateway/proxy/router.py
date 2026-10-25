@@ -47,6 +47,21 @@ def build_upstream_url(provider: str, path: str) -> str:
     return f"{base}/{path}"
 
 
+# Env var holding each provider's server-side credential.
+PROVIDER_KEY_ENV = {
+    "deepseek": "UPSTREAM_API_KEY_DEEPSEEK",
+    "qwen": "UPSTREAM_API_KEY_QWEN",
+    "openai": "UPSTREAM_API_KEY_OPENAI",
+    "anthropic": "UPSTREAM_API_KEY_ANTHROPIC",
+    "baichuan": "UPSTREAM_API_KEY_BAICHUAN",
+}
+
+
+def provider_api_key(provider: str) -> Optional[str]:
+    """Server-side credential for a provider, or None when not configured."""
+    return getattr(settings, f"upstream_api_key_{provider}", None)
+
+
 async def forward_request(
     request: Request,
     provider: str,
@@ -102,27 +117,40 @@ async def forward_request(
                         .where(UsageRecord.tenant_id == ak.tenant_id, UsageRecord.created_at >= month_start))
                     monthly = int(r2.scalar() or 0)
                     if q.daily_token_cap and daily + prompt_tokens > q.daily_token_cap:
-                        from fastapi.responses import JSONResponse
                         return JSONResponse(status_code=429, content={"error": "Daily token quota exceeded"})
                     if q.monthly_token_cap and monthly + prompt_tokens > q.monthly_token_cap:
-                        from fastapi.responses import JSONResponse
                         return JSONResponse(status_code=429, content={"error": "Monthly token quota exceeded"})
         except Exception as e:
-            from gateway.config.logging import log
             log.warning("quota_check_failed", error=str(e))
 
     url = build_upstream_url(provider, path)
+    # Forward only protocol headers. Credentials are resolved server-side so a
+    # tenant key (or any caller credential) is never forwarded to the provider.
     headers = {}
-    # Forward auth: prefer provider key from env? For demo, pass through client Authorization
-    # and add provider-specific headers.
-    for h in ("authorization", "content-type", "accept", "x-api-key", "anthropic-version", "anthropic-beta"):
+    for h in ("content-type", "accept", "anthropic-version", "anthropic-beta"):
         v = request.headers.get(h)
         if v:
             headers[h] = v
 
-    # If no authorization provided, inject a placeholder note (demo mode)
-    if "authorization" not in {k.lower() for k in headers} and "x-api-key" not in {k.lower() for k in headers}:
-        log.warning("no_upstream_creds", provider=provider)
+    upstream_key = provider_api_key(provider)
+    if not upstream_key:
+        env_name = PROVIDER_KEY_ENV.get(provider, provider.upper())
+        log.warning("upstream_creds_missing", provider=provider, env_var=env_name)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": (
+                    f"upstream credentials not configured for provider '{provider}' "
+                    f"— set {env_name} in .env"
+                )
+            },
+        )
+
+    if provider == "anthropic":
+        headers["x-api-key"] = upstream_key
+        headers.setdefault("anthropic-version", "2023-06-01")
+    else:
+        headers["authorization"] = f"Bearer {upstream_key}"
 
     timeout = httpx.Timeout(120.0, connect=10.0, read=120.0, write=30.0)
 
@@ -161,7 +189,7 @@ async def forward_request(
     # record usage
     try:
         from gateway.db.session import get_session_factory
-        from gateway.billing.tracker import record_usage, emit_billing_event
+        from gateway.billing.tracker import record_usage, emit_billing_event, maybe_emit_cap_alert
         sf = get_session_factory()
         async with sf() as session:
             ak = getattr(request.state, "api_key", None)
@@ -184,6 +212,8 @@ async def forward_request(
                 "request_id": request_id, "provider": provider, "model": model,
                 "prompt_tokens": pt, "completion_tokens": ct,
             })
+            if ak:
+                await maybe_emit_cap_alert(session, ak.tenant_id)
     except Exception as e:
         log.warning("usage_record_failed", error=str(e))
 
@@ -262,7 +292,7 @@ async def _stream_response(
         latency_ms = (time.time() - start) * 1000
         try:
             from gateway.db.session import get_session_factory
-            from gateway.billing.tracker import record_usage, emit_billing_event
+            from gateway.billing.tracker import record_usage, maybe_emit_cap_alert
             sf = get_session_factory()
             async with sf() as session:
                 ak = getattr(request.state, "api_key", None)
@@ -281,6 +311,8 @@ async def _stream_response(
                     latency_ms=latency_ms,
                     status_code=200,
                 )
+                if ak:
+                    await maybe_emit_cap_alert(session, ak.tenant_id)
         except Exception as e:
             log.warning("stream_usage_record_failed", error=str(e))
 

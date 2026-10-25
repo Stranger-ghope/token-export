@@ -1,0 +1,21 @@
+# Never bake local state or secrets into the image
+.env
+data/
+*.db
+*.sqlite*
+
+# VCS / CI / caches
+.git
+.github
+.gitignore
+.pytest_cache
+**/__pycache__
+*.pyc
+
+# Frontend: rebuild inside the image, don't ship local installs
+frontend/node_modules
+frontend/dist
+
+# Tests and docs are not needed in the build context
+tests/
+*.md
