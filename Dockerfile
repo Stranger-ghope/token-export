@@ -32,4 +32,5 @@ ENV APP_ENV=prod DEBUG=false HOST=0.0.0.0 PORT=8080
 EXPOSE 8080
 
 # Single worker: in-memory rate limiter is per-process.
-CMD ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+# Render injects PORT (from EXPOSE, default 8080); fall back to 8080 elsewhere.
+CMD uvicorn gateway.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
